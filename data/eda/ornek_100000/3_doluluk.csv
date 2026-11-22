@@ -1,0 +1,7 @@
+kind,name,nationality,country_of_residence,date_of_birth,identification,natures_of_control,notified_on
+corporate-entity-beneficial-owner,100.0,0.0,0.0,0.0,100.0,100.0,100.0
+corporate-entity-person-with-significant-control,100.0,0.0,0.0,0.0,100.0,100.0,100.0
+individual-beneficial-owner,100.0,100.0,0.0,100.0,0.0,100.0,100.0
+individual-person-with-significant-control,100.0,100.0,100.0,100.0,0.0,100.0,100.0
+legal-person-person-with-significant-control,100.0,0.0,0.0,0.0,100.0,100.0,100.0
+super-secure-person-with-significant-control,0.0,0.0,0.0,0.0,0.0,0.0,0.0

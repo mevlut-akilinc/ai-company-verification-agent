@@ -1,0 +1,11 @@
+,kind,adet,yuzde,sona_ermis,sona_erme_orani
+0,individual-person-with-significant-control,14081675,87.04,2094331,14.87
+1,corporate-entity-person-with-significant-control,1091153,6.74,250864,22.99
+2,persons-with-significant-control-statement,936034,5.79,367756,39.29
+3,individual-beneficial-owner,34980,0.22,3465,9.91
+4,legal-person-person-with-significant-control,17395,0.11,6443,37.04
+5,corporate-entity-beneficial-owner,15891,0.1,2285,14.38
+6,legal-person-beneficial-owner,592,0.0,68,11.49
+7,super-secure-person-with-significant-control,386,0.0,100,25.91
+8,super-secure-beneficial-owner,169,0.0,7,4.14
+9,exemptions,109,0.0,0,0.0
