@@ -192,10 +192,17 @@ def test_pdf_text_is_read():
 # ----------------------------------------------------------------- risk
 def test_risk_scorer_is_deterministic():
     state = {
-        "ubo": {"layers": 4, "has_cycle": True, "unresolved_foreign_entities": 0,
+        "ubo": {"status": "ok", "layers": 4, "has_cycle": True, "unresolved_foreign_entities": 0,
                 "protected_pscs": 0, "beneficial_owners": []},
         "screening": {"threshold": 0.9, "hits": [{"score": 0.95}]},
     }
     a, b = risk_scorer(state)["risk"], risk_scorer(state)["risk"]
     assert a == b
     assert a["score"] == 20 + 30 + 25 + 50 and a["level"] == "high"
+
+
+def test_no_ubo_rule_needs_completed_ubo():
+    """Konu şirket çözülemediyse 'faydalanıcı yok' denemez (eksik veri != risk sinyali)."""
+    fired = {r["rule"] for r in risk_scorer({"ubo": {"status": "atlandi",
+                                                      "beneficial_owners": []}})["risk"]["fired_rules"]}
+    assert "no_ubo" not in fired

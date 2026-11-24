@@ -36,8 +36,8 @@ if "cases" not in st.session_state:
 with st.sidebar:
     st.header("Yeni vaka")
     with st.form("new_case", clear_on_submit=True):
-        number = st.text_input("Şirket numarası", value="00000001")
-        name = st.text_input("Unvan", value="Demo Holding Ltd")
+        number = st.text_input("Şirket numarası", value="00002065")
+        name = st.text_input("Unvan", value="")
         belge = st.text_input("Belge yolu (PDF)", value="")
         if st.form_submit_button("Vakayı başlat", type="primary"):
             case_id = f"case-{uuid.uuid4().hex[:8]}"

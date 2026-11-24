@@ -116,8 +116,8 @@ def main(argv=None):
     l.set_defaults(func=cmd_load)
 
     c = sub.add_parser("case", help="Terminalden tek vaka çalıştır (onay dahil)")
-    c.add_argument("--company-number", default="00000001")
-    c.add_argument("--name", default="Demo Holding Ltd")
+    c.add_argument("--company-number", default="00002065", help="UK şirket numarası")
+    c.add_argument("--name", default="", help="Unvan (numara yoksa ER bununla arar)")
     c.add_argument("--belge", help="Belge agent'ına verilecek PDF/metin dosyası")
     c.set_defaults(func=cmd_case)
 

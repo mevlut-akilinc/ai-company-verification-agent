@@ -17,6 +17,7 @@ class GraphStore(Protocol):
     def company(self, company_number: str) -> dict | None: ...
     def search(self, label: str, query: str, limit: int = 10) -> list[dict]: ...
     def upstream_legal_entities(self, company_number: str, max_depth: int = 10) -> list[dict]: ...
+    def controllers(self, company_numbers: list[str]) -> list[dict]: ...
 
 
 class Neo4jStore:
@@ -24,8 +25,10 @@ class Neo4jStore:
         from neo4j import GraphDatabase
 
         self.s = settings or Neo4jSettings()
+        # Sunucu uyarıları (ör. hiç yazılmamış özellik adı) loglara dökülmesin.
         self.driver = GraphDatabase.driver(self.s.uri, auth=(self.s.user, self.s.password),
-                                           connection_timeout=5)
+                                           connection_timeout=5,
+                                           notifications_min_severity="OFF")
         self.driver.verify_connectivity()
 
     def _q(self, query: str, **params) -> list[dict]:
@@ -50,10 +53,21 @@ class Neo4jStore:
     def upstream_legal_entities(self, company_number: str, max_depth: int = 10) -> list[dict]:
         """Konu şirketin sahiplik zincirindeki, sicilde çözülemeyen tüzel sahipler."""
         rows = self._q(
-            f"MATCH (le:LegalEntity)-[:CONTROLS*1..{int(max_depth)}]->"
-            "(:Company {company_number: $n}) RETURN DISTINCT properties(le) AS le",
+            f"MATCH p = (le:LegalEntity)-[:CONTROLS*1..{int(max_depth)}]->"
+            "(:Company {company_number: $n}) "
+            "WHERE all(r IN relationships(p) WHERE r.ceased_on IS NULL) "  # sadece aktif zincir
+            "RETURN DISTINCT properties(le) AS le",
             n=company_number)
         return [r["le"] for r in rows]
+
+    def controllers(self, company_numbers: list[str]) -> list[dict]:
+        """Verilen şirketlere gelen AKTİF kontrol kenarları (sona erenler hariç)."""
+        return self._q(
+            "MATCH (o)-[r:CONTROLS]->(c:Company) "
+            "WHERE c.company_number IN $nums AND r.ceased_on IS NULL "
+            "RETURN c.company_number AS asset, labels(o)[0] AS label, properties(o) AS owner, "
+            "properties(r) AS edge",
+            nums=list(company_numbers))
 
     def close(self) -> None:
         self.driver.close()

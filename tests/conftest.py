@@ -26,7 +26,9 @@ def built(tmp_path_factory):
 class FakeStore:
     """GraphStore arayüzü; fulltext yerine basit kelime eşleşmesi."""
 
-    def __init__(self, companies=(), leis=(), legal_entities=(), upstream=None):
+    def __init__(self, companies=(), leis=(), legal_entities=(), upstream=None, edges=()):
+        # edges: {"asset", "label", "owner": {...}, "edge": {share_min, ...}} (store.controllers biçimi)
+        self.edges = list(edges)
         self.companies = {c["company_number"]: c for c in companies}
         self.leis = list(leis)
         self.legal = list(legal_entities)
@@ -41,6 +43,9 @@ class FakeStore:
         kelimeler = {k.replace("\\", "").upper() for k in query.split()}
         return [n for n in havuz if kelimeler & set((n.get("name") or "").upper().split())][:limit]
 
+    def controllers(self, company_numbers):
+        return [e for e in self.edges if e["asset"] in company_numbers]
+
     def upstream_legal_entities(self, company_number, max_depth=10):
         keys = self.upstream.get(company_number, [])
         return [le for le in self.legal if le["entity_key"] in keys]
@@ -54,6 +59,19 @@ DEMO_STORE = FakeStore(
     legal_entities=[{"entity_key": "le1", "name": "Demo Holdings Ltd",
                      "country_registered": "England"}],
     upstream={"00000001": ["le1"]},
+    # 00000001 <- %75+ DEMO HOLDINGS LIMITED <- %50-75 Ayşe Yılmaz
+    #          <- %25-50 yabancı tüzel kişi (le1 değil, çözülemeyen)
+    edges=[
+        {"asset": "00000001", "label": "Company",
+         "owner": {"company_number": "00000002", "name": "DEMO HOLDINGS LIMITED"},
+         "edge": {"share_min": 75.0, "share_max": 100.0}},
+        {"asset": "00000002", "label": "Person",
+         "owner": {"psc_key": "p1", "name": "Ayşe Yılmaz", "birth_year": 1980, "birth_month": 5},
+         "edge": {"share_min": 50.0, "share_max": 75.0}},
+        {"asset": "00000002", "label": "LegalEntity",
+         "owner": {"entity_key": "le9", "name": "Offshore Ltd", "country_registered": "Jersey"},
+         "edge": {"share_min": 25.0, "share_max": 50.0}},
+    ],
 )
 
 

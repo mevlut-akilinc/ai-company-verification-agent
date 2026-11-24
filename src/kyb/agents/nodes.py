@@ -12,11 +12,13 @@ makes the final call".
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 
 from langgraph.types import interrupt
 
 from kyb import er
+from kyb import ubo as ubo_hesap
 from kyb.agents.state import KYBState, audit_entry
 from kyb.belge import belge_adi, belge_metni
 from kyb.config import UBO_THRESHOLD_PCT
@@ -216,21 +218,46 @@ def entity_resolution_agent(state: KYBState) -> dict:
             "audit": [audit_entry("entity_resolution_agent", ozet, llm_used=False)]}
 
 
+# --------------------------------------------------------------------------- UBO
 def ubo_agent(state: KYBState) -> dict:
-    ubo = {
-        "status": "stub",
-        "threshold_pct": UBO_THRESHOLD_PCT,
-        "layers": 3,
-        "has_cycle": False,
-        "unresolved_foreign_entities": 1,
-        "protected_pscs": 0,
-        "beneficial_owners": [
-            # PSC gives bands, so effective ownership is an interval.
-            {"name": "Ayşe Yılmaz", "effective_min": 40.0, "effective_max": 40.0, "path_count": 1},
-        ],
-    }
-    return {"ubo": ubo,
-            "audit": [audit_entry("ubo_agent", "3 katman, 1 UBO", llm_used=False, stub=True)]}
+    """Sahiplik zincirini graf üzerinde yürür, etkin pay aralıklarını hesaplar (kyb.ubo).
+
+    Konu şirket sicile bağlanamadıysa hesap yapılmaz (status='atlandi'): eksik veriyle
+    'faydalanıcı yok' demek yanlış bir risk sinyali üretirdi.
+    """
+    ent = state.get("entities") or {}
+    if ent.get("status") != "ok":
+        ubo = {"status": "atlandi", "neden": f"konu şirket sicilde yok (ER: {ent.get('status')})",
+               "threshold_pct": UBO_THRESHOLD_PCT, "beneficial_owners": []}
+        return {"ubo": ubo,
+                "audit": [audit_entry("ubo_agent", "atlandı: konu şirket çözülemedi",
+                                      llm_used=False)]}
+
+    konu = ent["subject"]["company_number"]
+    # ER'ın UK şirketine bağladığı çözümsüz tüzel sahipler zincirde şirket gibi yürünür.
+    cozumlenen = {o["entity_key"]: o["match"]["key"] for o in ent.get("owners") or []
+                  if o["karar"] == "eslesti" and o["match"]["label"] == "Company"}
+    try:
+        store = get_store()
+        kenarlar = ubo_hesap.zinciri_cek(store, konu, cozumlenen)
+        sirket = store.company(konu) or {}
+    except Exception as e:  # noqa: BLE001
+        ubo = {"status": "hata", "hata": f"{type(e).__name__}: {e}",
+               "threshold_pct": UBO_THRESHOLD_PCT, "beneficial_owners": []}
+        return {"ubo": ubo, "audit": [audit_entry("ubo_agent", f"graf hatası: {type(e).__name__}",
+                                                  llm_used=False)]}
+
+    sonuc = ubo_hesap.hesapla(konu, kenarlar, UBO_THRESHOLD_PCT, cozumlenen)
+    ubo = {"status": "ok", "method": "psc-bands-v1", "edges": len(kenarlar),
+           "psc_statements": sirket.get("psc_statements") or [], **sonuc}
+    siniflar = Counter(b["sinif"] for b in sonuc["beneficial_owners"])
+    ozet = (f"{sonuc['layers']} katman, {len(kenarlar)} kenar; UBO kesin {siniflar['kesin']} "
+            f"olası {siniflar['olasi']} kontrol {siniflar['kontrol']}"
+            + ("; döngü" if sonuc["has_cycle"] else "")
+            + (f"; çözümsüz yabancı {sonuc['unresolved_foreign_entities']}"
+               if sonuc["unresolved_foreign_entities"] else "")
+            + ("; KESİLDİ" if sonuc["truncated"] else ""))
+    return {"ubo": ubo, "audit": [audit_entry("ubo_agent", ozet, llm_used=False)]}
 
 
 def screening_agent(state: KYBState) -> dict:
@@ -258,8 +285,11 @@ RISK_RULES = [
      15, lambda s: (s.get("ubo") or {}).get("unresolved_foreign_entities", 0) > 0),
     ("protected_psc", "Kimliği gizli (super-secure) PSC",
      20, lambda s: (s.get("ubo") or {}).get("protected_pscs", 0) > 0),
+    # Sadece UBO hesabı gerçekten yapıldıysa: konu şirket çözülemediyse 'yok' denemez.
     ("no_ubo", "Eşiği aşan gerçek faydalanıcı yok",
-     25, lambda s: not (s.get("ubo") or {}).get("beneficial_owners")),
+     25, lambda s: (s.get("ubo") or {}).get("status") == "ok"
+     and not any(b.get("sinif") in ("kesin", "olasi")
+                 for b in (s.get("ubo") or {}).get("beneficial_owners", []))),
     ("screening_hit", "Eşik üstü tarama eşleşmesi",
      50, lambda s: any(h["score"] >= (s.get("screening") or {}).get("threshold", 0.9)
                        for h in (s.get("screening") or {}).get("hits", []))),
@@ -289,8 +319,38 @@ def report_agent(state: KYBState) -> dict:
     risk = state.get("risk") or {}
     notes = [h.get("note") for h in state.get("review_history", []) if h.get("note")]
     rule_lines = [f"- {r['description']} (+{r['points']})" for r in risk.get("fired_rules", [])]
-    ubo_lines = [f"- {b['name']}: %{b['effective_min']:.0f}–%{b['effective_max']:.0f}"
-                 for b in (state.get("ubo") or {}).get("beneficial_owners", [])]
+    ubo = state.get("ubo") or {}
+    sinif_adi = {"kesin": "kesin", "olasi": "olası (bant eşiği kapsıyor)",
+                 "kontrol": "kontrol yoluyla (yüzde yok)"}
+    ubo_lines = []
+    for b in ubo.get("beneficial_owners", []):
+        satir = f"- {b['name']}: etkin %{b['effective_min']:.1f}–%{b['effective_max']:.1f}"
+        if b.get("control_max", 0) > b["effective_max"]:
+            satir += f", kontrol zinciriyle %{b['control_min']:.0f}–%{b['control_max']:.0f}"
+        satir += f" · {sinif_adi.get(b.get('sinif'), '-')} · {b.get('path_count', 1)} yol"
+        if b.get("joint"):
+            satir += " · müşterek tutma (yüzdeler toplanamaz)"
+        ubo_lines.append(satir)
+    if ubo.get("status") == "ok":
+        if not ubo_lines:
+            ubo_lines.append(f"- Eşiği (%{ubo['threshold_pct']:.0f}) aşan ya da kontrol hakkı "
+                             f"olan gerçek kişi bulunamadı ({ubo['persons_seen']} kişi incelendi)")
+        ubo_lines += [
+            "",
+            f"Zincir: {ubo['layers']} kurumsal katman, {ubo['edges']} aktif kontrol kenarı"
+            + ("; **döngüsel sahiplik var**" if ubo["has_cycle"] else "")
+            + ("; **hesap sınırda kesildi**" if ubo["truncated"] else ""),
+            f"Çözümsüz yabancı tüzel sahip: {ubo['unresolved_foreign_entities']}",
+            *(f"  - {e.get('name')} ({e.get('country_registered', '?')})"
+              for e in ubo.get("foreign_entities", [])[:5]),
+        ]
+        for t in ubo.get("top_companies", [])[:5]:
+            beyan = ", ".join(t["psc_statements"]) or "PSC kaydı/beyanı yok (borsa muafiyeti olabilir)"
+            ubo_lines.append(f"Zincir tepesi: {t['company_number']} · {t['name']}: {beyan}")
+        if ubo.get("psc_statements"):
+            ubo_lines.append(f"Şirketin PSC beyanları: {', '.join(ubo['psc_statements'])}")
+    elif ubo:
+        ubo_lines.append(f"- UBO hesabı yapılmadı: {ubo.get('neden') or ubo.get('hata')}")
     extraction = state.get("extraction") or {}
     fields = extraction.get("fields") or {}
     doc_review = state.get("document_review")
@@ -348,11 +408,12 @@ def report_agent(state: KYBState) -> dict:
     ]
     if notes:
         lines += ["", "## Analist notları (önceki tur)", *[f"- {n}" for n in notes]]
-    lines += ["", "_Taslak rapor. UBO, tarama ve risk girdileri henüz DEMO verisidir. "
-              "Nihai karar analiste aittir._"]
-    report = {"status": "stub", "markdown": "\n".join(lines), "version": state.get("revision_count", 0) + 1}
+    lines += ["", "_Taslak rapor. Tarama bölümü henüz DEMO verisidir; risk skorundaki "
+              "tarama kuralları da demo girdiyle hesaplanır. Nihai karar analiste aittir._"]
+    report = {"status": "template", "markdown": "\n".join(lines), "version": state.get("revision_count", 0) + 1}
     return {"report": report,
-            "audit": [audit_entry("report_agent", f"rapor v{report['version']}", llm_used=True, stub=True)]}
+            "audit": [audit_entry("report_agent", f"rapor v{report['version']} (şablon)",
+                                  llm_used=False)]}
 
 
 # --------------------------------------------------------------------------- human in the loop
