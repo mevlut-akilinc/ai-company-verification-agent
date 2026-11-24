@@ -9,3 +9,9 @@ data/eval/
 *.part
 /notlar.txt
 runs/
+
+# Kişisel notlar (repoya girmez)
+/ne_yaptık.md
+/sıkıntılar.txt
+/docs/notlar.txt
+/docs/faydalı_kaynaklar.txt
