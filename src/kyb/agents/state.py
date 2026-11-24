@@ -14,7 +14,13 @@ class KYBState(TypedDict, total=False):
     subject: dict[str, Any]          # {"company_number": ..., "name": ...}
     documents: list[dict[str, Any]]  # input documents (paths / metadata)
 
-    extraction: dict[str, Any] | None   # Document agent
+    extraction: dict[str, Any] | None   # Document agent (hata olsa da dolu: status="hata")
+    grounding: dict[str, Any] | None    # Document agent: GroundingRaporu + sayaçlar
+    oran_analizi: dict[str, Any] | None  # Document agent: OranAnalizi
+    extraction_error: dict[str, Any] | None  # Document agent: {"kod", "mesaj", "ham_cikti", ...}
+    insan_incelemesi_gerekli: bool      # Document agent: belge aşamasında analist bakmalı mı
+    inceleme_nedenleri: list[str]       # ör. ["GROUNDING_KALDI", "SERMAYE_TOPLAMI_TUTMUYOR"]
+    document_review: dict[str, Any] | None  # Belge aşamasındaki analist kararı
     entities: dict[str, Any] | None     # Entity resolution agent
     ubo: dict[str, Any] | None          # Graph / UBO agent
     screening: dict[str, Any] | None    # Screening agent

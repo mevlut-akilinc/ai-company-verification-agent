@@ -38,9 +38,11 @@ with st.sidebar:
     with st.form("new_case", clear_on_submit=True):
         number = st.text_input("Şirket numarası", value="00000001")
         name = st.text_input("Unvan", value="Demo Holding Ltd")
+        belge = st.text_input("Belge yolu (PDF)", value="")
         if st.form_submit_button("Vakayı başlat", type="primary"):
             case_id = f"case-{uuid.uuid4().hex[:8]}"
-            start_case(graph, case_id, {"company_number": number, "name": name})
+            documents = [{"path": belge.strip().strip('"')}] if belge.strip() else []
+            start_case(graph, case_id, {"company_number": number, "name": name}, documents)
             st.session_state.cases.insert(0, case_id)
             st.session_state.selected = case_id
 
@@ -81,17 +83,33 @@ if risk.get("fired_rules"):
     st.markdown("**Tetiklenen kurallar** (deterministik, `rules-v0`)")
     st.dataframe(risk["fired_rules"], hide_index=True, width="stretch")
 
+doc_stage = (payload or {}).get("stage") == "document"
 left, right = st.columns([3, 2])
 with left:
-    st.markdown("### Rapor")
-    md = (payload or {}).get("report_markdown") or (values.get("report") or {}).get("markdown")
-    st.markdown(md or "_Rapor yok_")
+    if doc_stage:
+        st.markdown("### Belge incelemesi")
+        st.warning("İnceleme nedenleri: " + (", ".join(payload["nedenler"]) or "-"))
+        if payload.get("hata"):
+            st.error(f"{payload['hata']['kod']}: {payload['hata']['mesaj']}")
+        if payload.get("sorunlu_kontroller"):
+            st.markdown("**Grounding: dayanağı bulunamayan / kısmi değerler**")
+            st.dataframe(payload["sorunlu_kontroller"], hide_index=True, width="stretch")
+        if payload.get("oran_analizi"):
+            st.markdown("**Pay oranları**")
+            st.dataframe(payload["oran_analizi"]["ortaklar"], hide_index=True, width="stretch")
+        if payload.get("extraction"):
+            with st.expander("Çıkarılan alanlar"):
+                st.json(payload["extraction"])
+    else:
+        st.markdown("### Rapor")
+        md = (payload or {}).get("report_markdown") or (values.get("report") or {}).get("markdown")
+        st.markdown(md or "_Rapor yok_")
 
 with right:
     if payload:
-        st.markdown("### Karar")
+        st.markdown("### Belge kararı" if doc_stage else "### Karar")
         with st.form("decision"):
-            action = st.radio("Karar", list(ACTION_LABELS), format_func=ACTION_LABELS.get)
+            action = st.radio("Karar", payload["allowed_actions"], format_func=ACTION_LABELS.get)
             reviewer = st.text_input("Analist", value="analist")
             note = st.text_area("Not (Ret ve değişiklik talebinde zorunlu)")
             if st.form_submit_button("Kararı kaydet", type="primary"):

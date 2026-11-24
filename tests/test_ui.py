@@ -11,7 +11,13 @@ def test_ui_start_case_and_approve():
     assert not at.exception
     assert any("Soldan bir vaka" in i.value for i in at.info)
 
-    at.sidebar.button[0].click().run()  # "Vakayı başlat"
+    at.sidebar.button[0].click().run()  # "Vakayı başlat" (belgesiz -> önce belge incelemesi)
+    assert not at.exception
+    assert any("BELGE_YOK" in w.value for w in at.warning)
+    decision_radio = [r for r in at.radio if r.label == "Karar"][0]
+    assert decision_radio.options == ["Onayla", "Reddet"]  # belge aşamasında revizyon yok
+    decision_radio.set_value("approve")
+    at.button(key=SUBMIT).click().run()
     assert not at.exception
     assert at.metric[0].value == "45"   # stub case -> rules-v0 score
 

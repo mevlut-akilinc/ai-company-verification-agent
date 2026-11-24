@@ -20,8 +20,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from pypdf import PdfReader
-
+from kyb.belge import pdf_metni
 from kyb.extraction import SirketBilgisi
 from kyb.extractor import MODEL, SYSTEM_PROMPT, ExtractionError, extract_company
 from kyb.grounding import ground
@@ -37,10 +36,6 @@ ORTAK_ALANLARI = ("ad", "tur", "pay_tutari", "pay_orani")  # kanit karşılaşt�
 
 
 # --------------------------------------------------------------------------- yardımcılar
-def pdf_metni(yol: Path) -> str:
-    return "\n".join(sayfa.extract_text() or "" for sayfa in PdfReader(yol).pages)
-
-
 def turkce_kucuk(metin: str) -> str:
     """Büyük/küçük harften bağımsız karşılaştırma anahtarı.
 

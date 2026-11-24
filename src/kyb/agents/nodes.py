@@ -1,9 +1,9 @@
 """Graph nodes.
 
-Faz 0: the agent nodes are stubs returning fixed, clearly-marked outputs with
-the final output *shape*, so the whole flow (supervisor -> agents -> risk ->
-report -> human approval) runs end to end. Each stub is replaced by the real
-implementation in later weeks without touching the graph wiring.
+The document agent is real (LLM extraction + deterministic grounding and share
+ratio checks). The other agent nodes are still stubs returning fixed,
+clearly-marked outputs with the final output *shape*, so the whole flow runs
+end to end. Each stub is replaced by the real implementation later.
 
 The risk scorer is already real: it is plain deterministic code, because the
 design rule is "the LLM never decides; code computes the numbers; a human
@@ -17,29 +17,143 @@ from datetime import datetime, timezone
 from langgraph.types import interrupt
 
 from kyb.agents.state import KYBState, audit_entry
+from kyb.belge import belge_adi, belge_metni
 from kyb.config import UBO_THRESHOLD_PCT
+from kyb.extractor import MODEL, ExtractionError, extract_company
+from kyb.grounding import ground
+from kyb.oranlar import hesapla_oranlar
 
 VALID_ACTIONS = {"approve", "reject", "request_changes"}
+DOCUMENT_ACTIONS = {"approve", "reject"}
+
+
+# --------------------------------------------------------------------------- document agent
+def _belge_hatasi(kod: str, mesaj: str, *, belge: str | None, llm_used: bool, **detay) -> dict:
+    """Hata yolu: akış durmaz. extraction None kalmamalı, yoksa supervisor bu düğüme
+    geri döner ve sonsuz döngü olur; status='hata' ile 'çalıştı ama sonuç yok' denir."""
+    hata = {"kod": kod, "mesaj": mesaj, "belge": belge, **detay}
+    return {
+        "extraction": {"status": "hata", "belge": belge, "fields": None},
+        "grounding": None,
+        "oran_analizi": None,
+        "extraction_error": hata,
+        "insan_incelemesi_gerekli": True,
+        "inceleme_nedenleri": [kod],
+        "audit": [audit_entry("document_agent", f"{kod}: {mesaj[:120]}", llm_used=llm_used)],
+    }
+
+
+def document_agent(state: KYBState) -> dict:
+    """belge metni -> extract_company (LLM) -> ground -> hesapla_oranlar.
+
+    LLM sadece çıkarım yapar; grounding ve oranlar deterministik koddur. Düğüm hiçbir
+    değeri düzeltmez; şüpheli her şeyi işaretleyip vakayı analiste yönlendirir.
+    """
+    belgeler = state.get("documents") or []
+    if not belgeler:
+        return _belge_hatasi("BELGE_YOK", "Vakaya belge eklenmedi.", belge=None, llm_used=False)
+
+    nedenler: list[str] = []
+    if len(belgeler) > 1:
+        # Çoklu belge birleştirme henüz yok; sessizce atlamak yerine analiste söyle.
+        nedenler.append("BIRDEN_FAZLA_BELGE")
+    belge = belgeler[0]
+    ad = belge_adi(belge)
+
+    try:
+        metin = belge_metni(belge)
+    except Exception as e:  # noqa: BLE001 - bozuk/eksik dosya vakayı çökertmesin
+        return _belge_hatasi("BELGE_OKUNAMADI", f"{type(e).__name__}: {e}", belge=ad, llm_used=False)
+    if not metin.strip():
+        return _belge_hatasi("BELGE_BOS", "Belgeden metin çıkmadı (taranmış PDF olabilir).",
+                             belge=ad, llm_used=False)
+
+    try:
+        sonuc, meta = extract_company(metin)
+    except ExtractionError as e:
+        return _belge_hatasi("CIKARIM_HATASI", str(e), belge=ad, llm_used=True, ham_cikti=e.raw,
+                             meta={k: v for k, v in e.meta.items() if k != "raw"})
+    except Exception as e:  # noqa: BLE001 - ör. Ollama kapalı
+        return _belge_hatasi("LLM_CAGRISI_BASARISIZ", f"{type(e).__name__}: {e}", belge=ad,
+                             llm_used=True)
+
+    rapor = ground(sonuc, metin)
+    analiz = hesapla_oranlar(sonuc)
+
+    if rapor.kalan_sayisi:
+        nedenler.append("GROUNDING_KALDI")
+    if rapor.kismi_sayisi:
+        nedenler.append("GROUNDING_KISMI")
+    # Şirket ve ortak düzeyindeki oran uyarıları; tekrarsız, ilk görülme sırasıyla.
+    for kod in [*analiz.uyarilar, *(u for o in analiz.ortaklar for u in o.uyarilar)]:
+        if kod not in nedenler:
+            nedenler.append(kod)
+
+    gerekli = bool(nedenler)
+    ozet = (f"{len(sonuc.ortaklar)} ortak; grounding kaldı {rapor.kalan_sayisi} "
+            f"kısmi {rapor.kismi_sayisi}; uyarı {len(nedenler)}"
+            + (" -> insan incelemesi" if gerekli else ""))
+    return {
+        "extraction": {
+            "status": "ok",
+            "belge": ad,
+            "fields": sonuc.model_dump(),
+            "meta": {k: v for k, v in meta.items() if k != "raw"},
+        },
+        "grounding": {"dogrulandi": rapor.dogrulandi, "kalan_sayisi": rapor.kalan_sayisi,
+                      "kismi_sayisi": rapor.kismi_sayisi, **rapor.model_dump()},
+        "oran_analizi": analiz.model_dump(),
+        "extraction_error": None,
+        "insan_incelemesi_gerekli": gerekli,
+        "inceleme_nedenleri": nedenler,
+        "audit": [audit_entry("document_agent", ozet, llm_used=True, stub=False,
+                              model=MODEL, nedenler=nedenler)],
+    }
+
+
+def document_review(state: KYBState) -> dict:
+    """Belge aşamasında analist onayı. approve -> akış devam eder, reject -> vaka kapanır.
+
+    interrupt() öncesi kod resume'da yeniden çalışır; yan etkisiz kalmalı.
+    """
+    grounding = state.get("grounding") or {}
+    payload = {
+        "stage": "document",
+        "case_id": state.get("case_id"),
+        "subject": state.get("subject"),
+        "nedenler": state.get("inceleme_nedenleri", []),
+        "hata": state.get("extraction_error"),
+        "extraction": (state.get("extraction") or {}).get("fields"),
+        # Analist sadece sorunlu kontrolleri görsün.
+        "sorunlu_kontroller": [k for k in grounding.get("kontroller", [])
+                               if k["durum"] in ("kaldi", "kismi")],
+        "oran_analizi": state.get("oran_analizi"),
+        "allowed_actions": sorted(DOCUMENT_ACTIONS),
+    }
+    decision = interrupt(payload)
+
+    if not isinstance(decision, dict) or decision.get("action") not in DOCUMENT_ACTIONS:
+        raise ValueError(f"Geçersiz karar: {decision!r}. action ∈ {sorted(DOCUMENT_ACTIONS)} olmalı.")
+    record = {
+        "stage": "document",
+        "action": decision["action"],
+        "reviewer": decision.get("reviewer", "analyst"),
+        "note": decision.get("note", ""),
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "nedenler": state.get("inceleme_nedenleri", []),
+    }
+    update = {
+        "document_review": record,
+        "review_history": [record],
+        "audit": [audit_entry("document_review", f"belge {record['action']} ({record['reviewer']})",
+                              llm_used=False, decision=record["action"])],
+    }
+    if record["action"] == "reject":
+        update["review"] = record  # supervisor -> END
+    return update
 
 
 # --------------------------------------------------------------------------- agents (stubs)
-def document_agent(state: KYBState) -> dict:
-    subj = state.get("subject", {})
-    extraction = {
-        "status": "stub",
-        "fields": {
-            "unvan": subj.get("name"),
-            "sicil_no": subj.get("company_number"),
-            "ortaklar": [
-                {"ad": "Örnek Holding A.Ş.", "pay_orani": 60.0, "tur": "tuzel"},
-                {"ad": "Ayşe Yılmaz", "pay_orani": 40.0, "tur": "gercek"},
-            ],
-        },
-        # Every extracted value must point back to its source (doc, page).
-        "provenance": [{"field": "ortaklar", "doc": "sentetik_sicil_gazetesi.pdf", "page": 1}],
-    }
-    return {"extraction": extraction,
-            "audit": [audit_entry("document_agent", "2 ortak çıkarıldı", llm_used=True, stub=True)]}
 
 
 def entity_resolution_agent(state: KYBState) -> dict:
@@ -129,10 +243,25 @@ def report_agent(state: KYBState) -> dict:
     rule_lines = [f"- {r['description']} (+{r['points']})" for r in risk.get("fired_rules", [])]
     ubo_lines = [f"- {b['name']}: %{b['effective_min']:.0f}–%{b['effective_max']:.0f}"
                  for b in (state.get("ubo") or {}).get("beneficial_owners", [])]
+    extraction = state.get("extraction") or {}
+    fields = extraction.get("fields") or {}
+    doc_review = state.get("document_review")
+    belge_lines = [
+        f"- Kaynak: {extraction.get('belge') or '-'} (durum: {extraction.get('status', '-')})",
+        f"- Unvan: {fields.get('unvan') or '-'} · Sicil no: {fields.get('sicil_no') or '-'}",
+        f"- Ortak sayısı: {len(fields.get('ortaklar') or [])}",
+        f"- İnceleme nedenleri: {', '.join(state.get('inceleme_nedenleri') or []) or 'yok'}",
+    ]
+    if doc_review:
+        belge_lines.append(f"- Belge aşaması analist kararı: {doc_review['action']} "
+                           f"({doc_review['reviewer']})")
     lines = [
         f"# KYB Ön Raporu: {subj.get('name', '?')} ({subj.get('company_number', '?')})",
         "",
         f"**Risk:** {risk.get('level', '?')} (skor {risk.get('score', '?')})",
+        "",
+        "## Belge çıkarımı",
+        *belge_lines,
         "",
         "## Tetiklenen kurallar",
         *(rule_lines or ["- yok"]),
@@ -142,7 +271,7 @@ def report_agent(state: KYBState) -> dict:
     ]
     if notes:
         lines += ["", "## Analist notları (önceki tur)", *[f"- {n}" for n in notes]]
-    lines += ["", "_Taslak rapor (Faz 0 stub). Nihai karar analiste aittir._"]
+    lines += ["", "_Taslak rapor (belge dışı bölümler stub). Nihai karar analiste aittir._"]
     report = {"status": "stub", "markdown": "\n".join(lines), "version": state.get("revision_count", 0) + 1}
     return {"report": report,
             "audit": [audit_entry("report_agent", f"rapor v{report['version']}", llm_used=True, stub=True)]}
@@ -153,6 +282,7 @@ def human_review(state: KYBState) -> dict:
     """Pause the graph until an analyst decides. Code before interrupt() re-runs on resume,
     so it must stay side-effect free."""
     payload = {
+        "stage": "report",
         "case_id": state.get("case_id"),
         "subject": state.get("subject"),
         "risk": state.get("risk"),
@@ -164,6 +294,7 @@ def human_review(state: KYBState) -> dict:
     if not isinstance(decision, dict) or decision.get("action") not in VALID_ACTIONS:
         raise ValueError(f"Geçersiz karar: {decision!r}. action ∈ {sorted(VALID_ACTIONS)} olmalı.")
     record = {
+        "stage": "report",
         "action": decision["action"],
         "reviewer": decision.get("reviewer", "analyst"),
         "note": decision.get("note", ""),

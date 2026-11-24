@@ -2,7 +2,9 @@
 
 The supervisor is plain code, not an LLM: it walks PIPELINE and sends the case
 to the first step whose output is still missing. Routing is therefore
-reproducible and auditable. Every worker returns to the supervisor.
+reproducible and auditable. Every worker returns to the supervisor, except the
+document agent: a conditional edge sends unclean extractions (grounding
+failures, share-ratio warnings, extraction errors) to document_review first.
 """
 
 from __future__ import annotations
@@ -42,12 +44,23 @@ def route(state: KYBState) -> str:
     return END
 
 
+def route_after_document(state: KYBState) -> str:
+    """İlk koşullu kenar: grounding temiz ve uyarı yoksa akış sürer, değilse analist bakar."""
+    return "document_review" if state.get("insan_incelemesi_gerekli", True) else "supervisor"
+
+
 def build_graph(checkpointer=None):
     g = StateGraph(KYBState)
     g.add_node("supervisor", supervisor)
     for name, fn in NODE_FUNCS.items():
         g.add_node(name, fn)
-        g.add_edge(name, "supervisor")
+        if name != "document_agent":
+            g.add_edge(name, "supervisor")
+    # Belge düğümü supervisor'a doğrudan dönmez; önce temiz mi diye bakılır.
+    g.add_node("document_review", nodes.document_review)
+    g.add_conditional_edges("document_agent", route_after_document,
+                            ["supervisor", "document_review"])
+    g.add_edge("document_review", "supervisor")  # reject -> review dolu -> route() END der
     g.add_edge(START, "supervisor")
     g.add_conditional_edges("supervisor", route, [*NODE_FUNCS, END])
     return g.compile(checkpointer=checkpointer or InMemorySaver())

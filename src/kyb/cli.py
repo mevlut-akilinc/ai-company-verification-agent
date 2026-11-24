@@ -44,21 +44,46 @@ def cmd_load(a):
         sink.close()
 
 
-def cmd_case(a):
-    from kyb.agents.graph import build_graph, pending_review, resume_case, start_case
+def _print_document_review(p: dict) -> None:
+    print("\n=== BELGE İNCELEMESİ GEREKLİ ===")
+    print("Nedenler:", ", ".join(p["nedenler"]) or "-")
+    if p.get("hata"):
+        print(f"Hata: {p['hata']['kod']}: {p['hata']['mesaj']}")
+    for k in p.get("sorunlu_kontroller", []):
+        print(f"  [{k['durum']}] {k['alan']} = {k['deger']!r}  {k['not_']}")
+    oa = p.get("oran_analizi") or {}
+    for o in oa.get("ortaklar", []):
+        oran = f"%{o['nihai_oran']:.2f}" if o["nihai_oran"] is not None else "-"
+        print(f"  ortak {o['ad']}: {oran} ({o['kaynak']}) {', '.join(o['uyarilar'])}")
+    if oa.get("uyarilar"):
+        print("  şirket uyarıları:", ", ".join(oa["uyarilar"]))
+    print()
 
+
+def cmd_case(a):
+    from kyb.agents.graph import build_graph, case_state, pending_review, resume_case, start_case
+
+    sys.stdout.reconfigure(encoding="utf-8")  # Windows konsolunda Türkçe
     g = build_graph()
     case_id = f"case-{uuid.uuid4().hex[:8]}"
-    start_case(g, case_id, {"company_number": a.company_number, "name": a.name})
+    documents = [{"path": str(Path(a.belge).resolve())}] if a.belge else []
+    start_case(g, case_id, {"company_number": a.company_number, "name": a.name}, documents)
     while (payload := pending_review(g, case_id)) is not None:
-        print("\n" + payload["report_markdown"] + "\n")
-        action = input("Karar [approve/reject/request_changes]: ").strip()
+        if payload.get("stage") == "document":
+            _print_document_review(payload)
+        else:
+            print("\n" + payload["report_markdown"] + "\n")
+        actions = "/".join(payload["allowed_actions"])
+        action = input(f"Karar [{actions}]: ").strip()
         note = input("Not: ").strip()
         try:
-            state = resume_case(g, case_id, {"action": action, "note": note, "reviewer": "cli"})
+            resume_case(g, case_id, {"action": action, "note": note, "reviewer": "cli"})
         except ValueError as e:
             print(e)
-            continue
+    state = case_state(g, case_id)
+    review = state.get("review")
+    print(f"\nSonuç: {review['stage']} aşamasında {review['action']}" if review
+          else "\nSonuç: karar yok (revizyon sınırı)")
     print("\nDenetim izi:")
     for e in state["audit"]:
         print(f"  {e['at']}  {e['node']:<24} {e['summary']}{'  [stub]' if e['stub'] else ''}")
@@ -93,6 +118,7 @@ def main(argv=None):
     c = sub.add_parser("case", help="Terminalden tek vaka çalıştır (onay dahil)")
     c.add_argument("--company-number", default="00000001")
     c.add_argument("--name", default="Demo Holding Ltd")
+    c.add_argument("--belge", help="Belge agent'ına verilecek PDF/metin dosyası")
     c.set_defaults(func=cmd_case)
 
     u = sub.add_parser("ui", help="Streamlit onay ekranını aç")
