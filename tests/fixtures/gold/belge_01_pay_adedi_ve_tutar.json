@@ -1,0 +1,24 @@
+{
+  "belge": "belge_01_pay_adedi_ve_tutar.pdf",
+  "beklenen": {
+    "unvan": "KARACA AKSOY GIDA DAĞITIM LİMİTED ŞİRKETİ",
+    "sicil_no": "612847",
+    "sermaye_tutari": 1000000.0,
+    "ortaklar": [
+      {
+        "ad": "Selim Karaca",
+        "tur": "gercek",
+        "pay_tutari": 350000.0,
+        "pay_orani": null
+      },
+      {
+        "ad": "Derya Aksoy",
+        "tur": "gercek",
+        "pay_tutari": 650000.0,
+        "pay_orani": null
+      }
+    ]
+  },
+  "beklenen_sirket_uyarilari": [],
+  "not": "Model pay adedini (14000, 26000) pay_tutari alanına yazmamalı. Derya Aksoy hem ortak hem müdür, sadece bir kez listelenmeli."
+}

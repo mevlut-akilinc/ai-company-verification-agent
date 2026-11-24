@@ -6,6 +6,7 @@ import json
 import os
 
 import ollama
+from pydantic import ValidationError
 
 from kyb.extraction import SirketBilgisi
 
@@ -27,12 +28,13 @@ Kurallar:
 class ExtractionError(Exception):
     """Model çıktısı kullanılamaz durumda (kesilmiş ya da şemaya uymuyor).
 
-    Teşhis için modelin ham çıktısını da taşır.
+    Teşhis için modelin ham çıktısını ve token ölçümlerini de taşır.
     """
 
-    def __init__(self, message: str, raw: str = ""):
+    def __init__(self, message: str, raw: str = "", meta: dict | None = None):
         super().__init__(message)
         self.raw = raw
+        self.meta = meta or {}
 
 
 def extract_company(document_text: str, *, num_predict: int = 1024) -> tuple[SirketBilgisi, dict]:
@@ -73,6 +75,11 @@ def extract_company(document_text: str, *, num_predict: int = 1024) -> tuple[Sir
     # Çıktı sınıra takılıp kesildiyse JSON yarımdır, doğrulamaya hiç girmeyelim.
     if response.done_reason == "length":
         raise ExtractionError(f"Çıktı num_predict={num_predict} sınırında kesildi.",
-                              raw=response.message.content)
+                              raw=response.message.content, meta=meta)
 
-    return SirketBilgisi.model_validate_json(response.message.content), meta
+    # Doğrulama hatası ExtractionError'a sarılır: ham çıktı kaybolmasın.
+    try:
+        return SirketBilgisi.model_validate_json(response.message.content), meta
+    except ValidationError as e:
+        raise ExtractionError(f"Şema doğrulaması başarısız: {e}",
+                              raw=response.message.content, meta=meta) from e

@@ -1,0 +1,24 @@
+{
+  "belge": "belge_05_yabanci_tuzel_ortak_buyuk_harf.pdf",
+  "beklenen": {
+    "unvan": "EGE NORTHBRIDGE TEKSTİL İHRACAT LİMİTED ŞİRKETİ",
+    "sicil_no": "254109",
+    "sermaye_tutari": 3000000.0,
+    "ortaklar": [
+      {
+        "ad": "NORTHBRIDGE HOLDINGS LTD",
+        "tur": "tuzel",
+        "pay_tutari": 2250000.0,
+        "pay_orani": null
+      },
+      {
+        "ad": "CANAN YILDIRIM",
+        "tur": "gercek",
+        "pay_tutari": 750000.0,
+        "pay_orani": null
+      }
+    ]
+  },
+  "beklenen_sirket_uyarilari": [],
+  "not": "İsimler büyük harfle aynen kopyalanmalı. JAMES HOLLOWAY ortak değil. Companies House no (11223344) sicil_no değil."
+}

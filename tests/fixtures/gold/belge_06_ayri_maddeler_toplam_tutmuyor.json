@@ -1,0 +1,33 @@
+{
+  "belge": "belge_06_ayri_maddeler_toplam_tutmuyor.pdf",
+  "beklenen": {
+    "unvan": "KUMSAL TURİZM OTELCİLİK LİMİTED ŞİRKETİ",
+    "sicil_no": "73508",
+    "sermaye_tutari": 1000000.0,
+    "ortaklar": [
+      {
+        "ad": "Hakan Demirtaş",
+        "tur": "gercek",
+        "pay_tutari": 400000.0,
+        "pay_orani": null
+      },
+      {
+        "ad": "Elif Sarı",
+        "tur": "gercek",
+        "pay_tutari": 300000.0,
+        "pay_orani": null
+      },
+      {
+        "ad": "Okan Bulut",
+        "tur": "gercek",
+        "pay_tutari": 250000.0,
+        "pay_orani": null
+      }
+    ]
+  },
+  "beklenen_sirket_uyarilari": [
+    "SERMAYE_TOPLAMI_TUTMUYOR",
+    "ORAN_TOPLAMI_TUTMUYOR"
+  ],
+  "not": "Model 'Kurucu (1)' referansını Madde 1'deki isimle eşlemeli. Payları kendisi düzeltip toplamı 1.000.000'a tamamlamamalı. Her kurucu bir kez listelenmeli."
+}

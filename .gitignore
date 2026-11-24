@@ -8,3 +8,4 @@ data/processed/
 data/eval/
 *.part
 /notlar.txt
+runs/

@@ -1,0 +1,30 @@
+{
+  "belge": "belge_03_sicil_no_yok_esit_paylar.pdf",
+  "beklenen": {
+    "unvan": "ÜÇGEN YAZILIM DANIŞMANLIK LİMİTED ŞİRKETİ",
+    "sicil_no": null,
+    "sermaye_tutari": 150000.0,
+    "ortaklar": [
+      {
+        "ad": "Barış Koç",
+        "tur": "gercek",
+        "pay_tutari": 50000.0,
+        "pay_orani": 33.33
+      },
+      {
+        "ad": "Zeynep Alkan",
+        "tur": "gercek",
+        "pay_tutari": 50000.0,
+        "pay_orani": 33.33
+      },
+      {
+        "ad": "Onur Şahin",
+        "tur": "gercek",
+        "pay_tutari": 50000.0,
+        "pay_orani": 33.34
+      }
+    ]
+  },
+  "beklenen_sirket_uyarilari": [],
+  "not": "Oda Sicil No (41235) sicil_no alanına yazılmamalı. Belgedeki oranlar hesaplananla tolerans içinde, ORAN_TUTARSIZ çıkmamalı."
+}

@@ -1,0 +1,24 @@
+{
+  "belge": "belge_04_as_ortak_olmayan_yk_uyeleri.pdf",
+  "beklenen": {
+    "unvan": "ER TEKİN ENERJİ SİSTEMLERİ ANONİM ŞİRKETİ",
+    "sicil_no": "157394",
+    "sermaye_tutari": 2000000.0,
+    "ortaklar": [
+      {
+        "ad": "Ayşe Er",
+        "tur": "gercek",
+        "pay_tutari": 1200000.0,
+        "pay_orani": null
+      },
+      {
+        "ad": "Tekin Yapı Malzemeleri Ticaret Limited Şirketi",
+        "tur": "tuzel",
+        "pay_tutari": 800000.0,
+        "pay_orani": null
+      }
+    ]
+  },
+  "beklenen_sirket_uyarilari": [],
+  "not": "Kerem Tekin (tüzel ortağın temsilcisi) ve Murat Ilgaz (bağımsız üye) ortak değil. Tüzel ortağın kendi sicil no'su (98412) şirketin sicil_no'su değil."
+}

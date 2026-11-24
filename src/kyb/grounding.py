@@ -12,6 +12,7 @@ Durumlar:
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -24,11 +25,20 @@ from kyb.extraction import SirketBilgisi
 Durum = Literal["gecti", "kismi", "kaldi", "atlandi"]
 
 BENZERLIK_ESIGI = 0.9
+# Asıl gerekçe pay_orani: hâlâ float ve float'lar == ile karşılaştırılmaz
+# (belgeden ayrıştırılan 33.33 ile modelin 33.33'ü). Tutarlar int olsa da belgede
+# kuruşlu sayılar (12.500,50) geçebilir; 0,01 iki yanda da kuruştan küçük farkı tolere eder.
 SAYI_TOLERANSI = 0.01
 
 # Aynı anlama gelen tırnak/kesme işaretleri -> tek karakter.
 _TIRNAKLAR = str.maketrans({"’": "'", "‘": "'", "`": "'", "´": "'", "“": '"', "”": '"'})
-_SAYI_RE = re.compile(r"\d+(?:[.,]\d+)?")
+# Türkçe sayı: nokta binlik, virgül ondalık ayırıcı. "1.000" hep "bin" kabul edilir.
+#   tam kısım : önce gruplu (1.000.000), sonra düz (25, 350000); ters sırada
+#               1.000.000 içinden sadece "1" yakalanırdı.
+#   ondalık   : isteğe bağlı ",50"
+#   sınırlar  : önünde/arkasında rakam ya da ayırıcı+rakam olmamalı; böylece
+#               23.11.2026 gibi tarihler "23.11" ya da "11.202" diye bölünmez.
+_SAYI_RE = re.compile(r"(?<!\d)(?<!\d[.,])(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?(?!\d|[.,]\d)")
 
 
 class Kontrol(BaseModel):
@@ -84,8 +94,11 @@ def en_iyi_benzerlik(parca: str, metin: str) -> float:
 
 
 def sayilari_bul(metin: str) -> list[float]:
-    """'%60', '12,5', '40.0' gibi ifadelerdeki sayıları float olarak döndürür."""
-    return [float(s.replace(",", ".")) for s in _SAYI_RE.findall(metin)]
+    """Türkçe yazılmış sayıları float olarak döndürür.
+
+    '1.000.000' -> 1000000.0, '12.500,50' -> 12500.5, '%33,33' -> 33.33.
+    """
+    return [float(s.replace(".", "").replace(",", ".")) for s in _SAYI_RE.findall(metin)]
 
 
 # --------------------------------------------------------------------------- kontroller
@@ -112,31 +125,68 @@ def _sicil_kontrol(sicil_no: str | None, belge: str) -> Kontrol:
                    not_="belgede bu numara tam sayı olarak geçmiyor")
 
 
-def _pay_kontrol(alan: str, pay: float | None, kanit: str) -> Kontrol:
-    """Pay oranı sayısı kanıt metninde geçmeli (modelin hesapladığı değerleri yakalar)."""
-    if pay is None:
+def _sayi_kontrol(alan: str, deger: float | None, sayilar: list[float], not_: str) -> Kontrol:
+    """Değer, kaynaktaki sayılardan biriyle eşleşmeli (modelin hesapladığı değerleri yakalar).
+
+    Alt metin araması yerine sayı karşılaştırması: belgede '1.000.000', modelde 1000000.
+    """
+    if deger is None:
         return Kontrol(alan=alan, deger=None, durum="atlandi")
-    sayilar = sayilari_bul(kanit)
-    if any(abs(s - pay) < SAYI_TOLERANSI for s in sayilar):
-        return Kontrol(alan=alan, deger=pay, durum="gecti")
-    return Kontrol(alan=alan, deger=pay, durum="kaldi",
-                   not_=f"kanıttaki sayılar: {sayilar}")
+    if any(math.isclose(s, deger, rel_tol=0, abs_tol=SAYI_TOLERANSI) for s in sayilar):
+        return Kontrol(alan=alan, deger=deger, durum="gecti")
+    return Kontrol(alan=alan, deger=deger, durum="kaldi", not_=not_)
+
+
+def _en_fazla_kismi(k: Kontrol) -> Kontrol:
+    """Kanıt kısmi eşleştiyse ona dayanan hiçbir kontrol 'gecti' olamaz."""
+    if k.durum == "gecti":
+        return k.model_copy(update={"durum": "kismi", "not_": "kanıt belgede kısmi eşleşti"})
+    return k
 
 
 def ground(sonuc: SirketBilgisi, belge_metni: str) -> GroundingRaporu:
     """Çıkarım sonucundaki her iddiayı belgeye karşı kontrol eder."""
     belge = normalize(belge_metni)
+    belge_sayilari = sayilari_bul(belge)  # bir kez
     kontroller = [
         _metin_kontrol("unvan", sonuc.unvan, belge),
         _sicil_kontrol(sonuc.sicil_no, belge),
+        # Sermayenin kanıt cümlesi yok; belgenin tamamına bakılır.
+        _sayi_kontrol("sermaye_tutari", sonuc.sermaye_tutari, belge_sayilari,
+                      "belgede bu sayı geçmiyor"),
     ]
     for i, ortak in enumerate(sonuc.ortaklar):
         on = f"ortaklar[{i}]"
-        kanit = normalize(ortak.kanit)
         # Kanıt belgede mi?
-        kontroller.append(_metin_kontrol(f"{on}.kanit", ortak.kanit, belge))
-        # Ad, belgenin tamamında değil kendi kanıtının içinde aranır:
-        # isim belgede başka bir rolle (ör. yönetim kurulu) de geçebilir.
-        kontroller.append(_metin_kontrol(f"{on}.ad", ortak.ad, kanit))
-        kontroller.append(_pay_kontrol(f"{on}.pay_orani", ortak.pay_orani, kanit))
+        kanit_kontrol = _metin_kontrol(f"{on}.kanit", ortak.kanit, belge)
+        kontroller.append(kanit_kontrol)
+
+        # Kanıt belgede yoksa ona dayanan kontroller anlamsız: kanıtın içinde
+        # aramak, uydurma metnin içinde aramak olur. Null değer iddia değildir,
+        # 'atlandi' kalır (kalan_sayisi şişmesin).
+        if kanit_kontrol.durum == "kaldi":
+            for alan, deger in (("ad", ortak.ad), ("pay_tutari", ortak.pay_tutari),
+                                ("pay_orani", ortak.pay_orani)):
+                if deger is None:
+                    kontroller.append(Kontrol(alan=f"{on}.{alan}", deger=None, durum="atlandi"))
+                else:
+                    kontroller.append(Kontrol(alan=f"{on}.{alan}", deger=deger, durum="kaldi",
+                                              not_="kanıt belgede bulunamadı"))
+            continue
+
+        kanit = normalize(ortak.kanit)
+        kanit_sayilari = sayilari_bul(kanit)
+        not_ = f"kanıttaki sayılar: {kanit_sayilari}"
+        alt = [
+            # Ad, belgenin tamamında değil kendi kanıtının içinde aranır:
+            # isim belgede başka bir rolle (ör. yönetim kurulu) de geçebilir.
+            _metin_kontrol(f"{on}.ad", ortak.ad, kanit),
+            # Pay değerleri ortağın kendi kanıtında aranır: A'ya B'nin oranını yazan
+            # model yakalanır (sayı belgede var ama A'nın kanıtında yok).
+            _sayi_kontrol(f"{on}.pay_tutari", ortak.pay_tutari, kanit_sayilari, not_),
+            _sayi_kontrol(f"{on}.pay_orani", ortak.pay_orani, kanit_sayilari, not_),
+        ]
+        if kanit_kontrol.durum == "kismi":
+            alt = [_en_fazla_kismi(k) for k in alt]
+        kontroller.extend(alt)
     return GroundingRaporu(kontroller=kontroller)
