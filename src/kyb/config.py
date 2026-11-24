@@ -50,8 +50,12 @@ class Neo4jSettings:
     database: str = field(default_factory=lambda: _env("NEO4J_DATABASE", "neo4j"))
 
 
-# GLEIF registration-authority code for UK Companies House.
-GLEIF_RA_COMPANIES_HOUSE = "RA000585"
+# GLEIF registration-authority codes of UK Companies House: England & Wales,
+# Northern Ireland, Scotland. All three are the same register (one number space:
+# 01234567 / NI012345 / SC012345); using only RA000585 dropped Scottish companies.
+GLEIF_RA_COMPANIES_HOUSE = frozenset({"RA000585", "RA000586", "RA000587"})
+# "Registration authority not listed": no signal either way.
+GLEIF_RA_UNKNOWN = "RA999999"
 
 # Ownership threshold for beneficial ownership (percent). Kept configurable:
 # UK PSC and the Turkish MASAK rule both use 25%, but this must not be hard-coded.

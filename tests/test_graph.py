@@ -157,13 +157,25 @@ def test_extraction_error_does_not_crash():
     assert payload["stage"] == "document" and payload["hata"]["kod"] == "CIKARIM_HATASI"
 
 
-def test_no_document_goes_to_review():
+def test_no_document_is_skipped_and_flow_continues():
     g = build_graph()
     start_case(g, "d5", SUBJ)
+    st = case_state(g, "d5")
+    assert st["extraction"]["status"] == "atlandi"
+    assert st["insan_incelemesi_gerekli"] is False and st["inceleme_nedenleri"] == []
+    assert st["audit"][0]["llm_used"] is False
     payload = pending_review(g, "d5")
-    assert payload["stage"] == "document" and payload["nedenler"] == ["BELGE_YOK"]
+    assert payload["stage"] == "report"  # belge onayına uğramadan rapora geldi
+    assert "Belge verilmedi" in payload["report_markdown"]
+    nodes_ = [a["node"] for a in st["audit"]]
+    assert "document_review" not in nodes_
+
+
+def test_document_stage_rejects_request_changes():
+    g = build_graph()
+    start_case(g, "d7", SUBJ, [{"text": "KESIK belge"}])
     with pytest.raises(ValueError):  # belge aşamasında request_changes yok
-        resume_case(g, "d5", {"action": "request_changes"})
+        resume_case(g, "d7", {"action": "request_changes"})
 
 
 def test_unreadable_document_does_not_crash():

@@ -16,10 +16,12 @@ from datetime import datetime, timezone
 
 from langgraph.types import interrupt
 
+from kyb import er
 from kyb.agents.state import KYBState, audit_entry
 from kyb.belge import belge_adi, belge_metni
 from kyb.config import UBO_THRESHOLD_PCT
 from kyb.extractor import MODEL, ExtractionError, extract_company
+from kyb.graph.store import get_store
 from kyb.grounding import ground
 from kyb.oranlar import hesapla_oranlar
 
@@ -51,7 +53,17 @@ def document_agent(state: KYBState) -> dict:
     """
     belgeler = state.get("documents") or []
     if not belgeler:
-        return _belge_hatasi("BELGE_YOK", "Vakaya belge eklenmedi.", belge=None, llm_used=False)
+        # Belge isteğe bağlı: vaka şirket numarasıyla başlar, ana kaynak sicil grafıdır.
+        # extraction None kalmamalı (supervisor tekrar buraya yönlendirirdi).
+        return {
+            "extraction": {"status": "atlandi", "belge": None, "fields": None},
+            "grounding": None,
+            "oran_analizi": None,
+            "extraction_error": None,
+            "insan_incelemesi_gerekli": False,
+            "inceleme_nedenleri": [],
+            "audit": [audit_entry("document_agent", "belge verilmedi, atlandı", llm_used=False)],
+        }
 
     nedenler: list[str] = []
     if len(belgeler) > 1:
@@ -156,16 +168,52 @@ def document_review(state: KYBState) -> dict:
 # --------------------------------------------------------------------------- agents (stubs)
 
 
+# --------------------------------------------------------------------------- entity resolution
 def entity_resolution_agent(state: KYBState) -> dict:
+    """Konu şirketi sicil grafına bağlar, LEI'sini ve zincirdeki çözümsüz tüzel sahipleri eşler.
+
+    Deterministik (kyb.er): LLM yok. Belirsiz eşleşmelerde seçim yapılmaz, adaylar raporlanır.
+    Graf erişilemezse akış durmaz; status='hata' yazılır.
+    """
+    subj = state.get("subject") or {}
+    try:
+        store = get_store()
+        konu = er.resolve_subject(store, subj.get("company_number"), subj.get("name"))
+        lei = sahipler = None
+        if konu["karar"] == "eslesti":
+            lei = er.link_lei(store, {"name": konu["name"]})
+            sahipler = [er.resolve_owner(store, le)
+                        for le in store.upstream_legal_entities(konu["company_number"])]
+    except Exception as e:  # noqa: BLE001 - ör. Neo4j kapalı
+        entities = {"status": "hata", "hata": f"{type(e).__name__}: {e}"}
+        return {"entities": entities,
+                "audit": [audit_entry("entity_resolution_agent",
+                                      f"graf erişilemedi: {type(e).__name__}", llm_used=False)]}
+
+    status = {"eslesti": "ok", "belirsiz": "belirsiz", "yok": "bulunamadi"}[konu["karar"]]
+    uyarilar = list(konu["uyarilar"])
+    if lei and lei["karar"] == "belirsiz":
+        uyarilar.append("LEI_BELIRSIZ")
+    sahipler = sahipler or []
+    eslesen = sum(s["karar"] == "eslesti" for s in sahipler)
     entities = {
-        "status": "stub",
-        "matches": [
-            {"mention": "Örnek Holding A.Ş.", "node": "Company:00000001", "score": 0.97, "method": "splink"},
-            {"mention": "Ayşe Yılmaz", "node": None, "score": None, "method": "no_candidate"},
-        ],
+        "status": status,
+        "subject": konu,
+        "lei": lei,
+        "owners": sahipler,
+        "owners_resolved": eslesen,
+        "uyarilar": uyarilar,
+        "method": "rules-v1",
     }
+    if status == "ok":
+        ozet = (f"{konu['company_number']} {konu['name']} ({konu['method']}); "
+                f"LEI {lei['karar']}; tüzel sahip {eslesen}/{len(sahipler)} eşleşti")
+    else:
+        ozet = f"konu şirket {status}"
+    if uyarilar:
+        ozet += f"; uyarı: {', '.join(uyarilar)}"
     return {"entities": entities,
-            "audit": [audit_entry("entity_resolution_agent", "1/2 eşleşti", llm_used=False, stub=True)]}
+            "audit": [audit_entry("entity_resolution_agent", ozet, llm_used=False)]}
 
 
 def ubo_agent(state: KYBState) -> dict:
@@ -246,19 +294,48 @@ def report_agent(state: KYBState) -> dict:
     extraction = state.get("extraction") or {}
     fields = extraction.get("fields") or {}
     doc_review = state.get("document_review")
-    belge_lines = [
-        f"- Kaynak: {extraction.get('belge') or '-'} (durum: {extraction.get('status', '-')})",
-        f"- Unvan: {fields.get('unvan') or '-'} · Sicil no: {fields.get('sicil_no') or '-'}",
-        f"- Ortak sayısı: {len(fields.get('ortaklar') or [])}",
-        f"- İnceleme nedenleri: {', '.join(state.get('inceleme_nedenleri') or []) or 'yok'}",
-    ]
+    if extraction.get("status") == "atlandi":
+        belge_lines = ["- Belge verilmedi; vaka sicil verisiyle yürütüldü."]
+    else:
+        belge_lines = [
+            f"- Kaynak: {extraction.get('belge') or '-'} (durum: {extraction.get('status', '-')})",
+            f"- Unvan: {fields.get('unvan') or '-'} · Sicil no: {fields.get('sicil_no') or '-'}",
+            f"- Ortak sayısı: {len(fields.get('ortaklar') or [])}",
+            f"- İnceleme nedenleri: {', '.join(state.get('inceleme_nedenleri') or []) or 'yok'}",
+        ]
     if doc_review:
         belge_lines.append(f"- Belge aşaması analist kararı: {doc_review['action']} "
                            f"({doc_review['reviewer']})")
+    ent = state.get("entities") or {}
+    konu = ent.get("subject") or {}
+    if ent.get("status") == "ok":
+        baslik = f"{konu['name']} ({konu['company_number']})"
+        lei = ent.get("lei") or {}
+        lei_satir = (f"{lei['lei']} · {lei['name']} (puan {lei['score']:.2f})"
+                     if lei.get("karar") == "eslesti" else
+                     f"{lei.get('karar', '-')} ({len(lei.get('candidates') or [])} aday)")
+        er_lines = [
+            f"- Sicil kaydı: {konu['company_number']} · {konu['name']} "
+            f"(yöntem: {konu['method']}, puan {konu['score']:.2f})",
+            f"- LEI: {lei_satir}",
+            f"- Zincirdeki çözümsüz tüzel sahipler: {len(ent.get('owners') or [])}, "
+            f"eşleşen {ent.get('owners_resolved', 0)}",
+        ]
+    else:
+        baslik = f"{subj.get('name', '?')} ({subj.get('company_number', '?')})"
+        er_lines = [f"- Konu şirket sicilde bağlanamadı (durum: {ent.get('status', '-')})"
+                    + (f": {ent['hata']}" if ent.get("hata") else "")]
+        er_lines += [f"  - aday: {a['key']} · {a['name']} ({a['score']:.2f})"
+                     for a in konu.get("candidates") or []]
+    if ent.get("uyarilar"):
+        er_lines.append(f"- Uyarılar: {', '.join(ent['uyarilar'])}")
     lines = [
-        f"# KYB Ön Raporu: {subj.get('name', '?')} ({subj.get('company_number', '?')})",
+        f"# KYB Ön Raporu: {baslik}",
         "",
         f"**Risk:** {risk.get('level', '?')} (skor {risk.get('score', '?')})",
+        "",
+        "## Sicil eşleştirmesi",
+        *er_lines,
         "",
         "## Belge çıkarımı",
         *belge_lines,
@@ -271,7 +348,8 @@ def report_agent(state: KYBState) -> dict:
     ]
     if notes:
         lines += ["", "## Analist notları (önceki tur)", *[f"- {n}" for n in notes]]
-    lines += ["", "_Taslak rapor (belge dışı bölümler stub). Nihai karar analiste aittir._"]
+    lines += ["", "_Taslak rapor. UBO, tarama ve risk girdileri henüz DEMO verisidir. "
+              "Nihai karar analiste aittir._"]
     report = {"status": "stub", "markdown": "\n".join(lines), "version": state.get("revision_count", 0) + 1}
     return {"report": report,
             "audit": [audit_entry("report_agent", f"rapor v{report['version']}", llm_used=True, stub=True)]}

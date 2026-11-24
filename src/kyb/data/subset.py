@@ -183,7 +183,7 @@ def gleif_ch_map(lei_files: list[Path]) -> dict[str, str]:
         if not checked:
             require_columns(row, [GLEIF_COLS[c] for c in GLEIF_REQUIRED], "GLEIF LEI-CDF")
             checked = True
-        if row.get(GLEIF_COLS["ra_id"]) != GLEIF_RA_COMPANIES_HOUSE:
+        if row.get(GLEIF_COLS["ra_id"]) not in GLEIF_RA_COMPANIES_HOUSE:
             continue
         cn = normalize_company_number(row.get(GLEIF_COLS["ra_entity_id"]))
         if cn:
