@@ -64,3 +64,5 @@ en zayıf halka hangisiyse o iyileştirilecek.
   Güncel ortaklık için pay defteri gerekir.
 - 4096 bağlam sınırı: şema + talimat ~750 token; belgeye ~2900 token kalıyor.
   Uzun belgeler Adım 4'te ele alınacak.
+
+S2 çözülene kadar ortaklı belgelerin çoğu belge incelemesine düşüyor.
