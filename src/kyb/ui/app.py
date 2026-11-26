@@ -15,6 +15,9 @@ ACTION_LABELS = {
     "approve": "Onayla",
     "reject": "Reddet",
     "request_changes": "Değişiklik iste",
+    "select": "Adaylardan seç",
+    "enter_number": "Numara girildi",
+    "kaydet": "Kaydet",
 }
 LEVEL_COLORS = {"low": "green", "medium": "orange", "high": "red"}
 
@@ -83,10 +86,41 @@ if risk.get("fired_rules"):
     st.markdown("**Tetiklenen kurallar** (deterministik, `rules-v0`)")
     st.dataframe(risk["fired_rules"], hide_index=True, width="stretch")
 
-doc_stage = (payload or {}).get("stage") == "document"
+stage = (payload or {}).get("stage")
+doc_stage = stage == "document"
+LIST_LABELS = {"yaptirim": "YAPTIRIM", "pep": "PEP", "diger": "Diğer liste"}
 left, right = st.columns([3, 2])
 with left:
-    if doc_stage:
+    if stage == "entity":
+        st.markdown("### Sicil eşleştirmesi incelemesi")
+        durum = {"belirsiz": "birden çok aday birbirine çok yakın",
+                 "bulunamadi": "sicilde eşleşen şirket bulunamadı"}.get(payload["durum"], payload["durum"])
+        st.warning(f"ER sonucu: **{payload['durum']}** ({durum}). Seçilen şirket UBO hesabının "
+                   "girdisi olduğu için akış analist kararını bekliyor.")
+        if payload["adaylar"]:
+            st.dataframe(payload["adaylar"], hide_index=True, width="stretch")
+        if payload["uyarilar"]:
+            st.caption("Uyarılar: " + ", ".join(payload["uyarilar"]))
+    elif stage == "screening":
+        st.markdown("### Tarama alarmları")
+        st.warning("Risk skoru bu kararlara dayanıyor: her alarm için ayrı karar ver. "
+                   "Sistem bir alarmı kendi kapatmaz.")
+        for h in payload["alarmlar"]:
+            with st.container(border=True):
+                st.markdown(f"**{h['alarm_id']}** · {h['query']} ({h['rol']}) ~ "
+                            f"**{h['candidate_name']}** · {LIST_LABELS.get(h['list'], h['list'])} "
+                            f"· skor {h['score']:.2f}")
+                st.caption(h["gerekce"])
+                if h.get("programs"):
+                    st.caption("Programlar: " + "; ".join(h["programs"][:3]))
+                st.caption(f"Liste kaydı: {h['candidate_id']} · "
+                           f"veri setleri: {', '.join(h.get('datasets') or [])}")
+        if payload["bastirilan"]:
+            with st.expander(f"Doğum çelişkisiyle bastırılan adaylar ({len(payload['bastirilan'])})"):
+                st.dataframe([{k: b[k] for k in ("query", "candidate_name", "list", "score",
+                                                 "gerekce")} for b in payload["bastirilan"]],
+                             hide_index=True, width="stretch")
+    elif doc_stage:
         st.markdown("### Belge incelemesi")
         st.warning("İnceleme nedenleri: " + (", ".join(payload["nedenler"]) or "-"))
         if payload.get("hata"):
@@ -105,8 +139,59 @@ with left:
         md = (payload or {}).get("report_markdown") or (values.get("report") or {}).get("markdown")
         st.markdown(md or "_Rapor yok_")
 
+def _resume(decision: dict) -> None:
+    try:
+        resume_case(graph, case_id, decision)
+    except ValueError as e:  # karar grafa gitmeden reddedildi; vaka aynı yerde bekler
+        st.error(str(e))
+    else:
+        st.rerun()
+
+
 with right:
-    if payload:
+    if stage == "entity":
+        st.markdown("### Sicil kararı")
+        with st.form("entity_decision"):
+            labels = {"select": "Adaylardan seç", "enter_number": "Şirket numarası gir",
+                      "reject": "Vakayı kapat"}
+            action = st.radio("Karar", payload["allowed_actions"], format_func=labels.get)
+            keys = [a["key"] for a in payload["adaylar"]]
+            secilen = st.selectbox("Aday", keys, index=None,
+                                   format_func=lambda k: next(f"{a['key']} · {a['name']}"
+                                                              for a in payload["adaylar"]
+                                                              if a["key"] == k)) if keys else None
+            numara = st.text_input("Şirket numarası (numara gir seçiliyse)")
+            reviewer = st.text_input("Analist", value="analist")
+            note = st.text_area("Not (vakayı kapatırken zorunlu)")
+            if st.form_submit_button("Kararı kaydet", type="primary"):
+                if action == "reject" and not note.strip():
+                    st.error("Bu karar için not yazmalısın.")
+                else:
+                    _resume({"action": action, "reviewer": reviewer, "note": note,
+                             "company_number": secilen if action == "select" else numara})
+    elif stage == "screening":
+        st.markdown("### Alarm kararları")
+        with st.form("screening_decision"):
+            kararlar = {}
+            for h in payload["alarmlar"]:
+                kararlar[h["alarm_id"]] = st.radio(
+                    f"{h['alarm_id']} · {h['candidate_name']}", ["gercek", "yanlis"], index=None,
+                    format_func={"gercek": "Gerçek eşleşme", "yanlis": "Yanlış alarm"}.get,
+                    horizontal=True, key=f"alarm-{case_id}-{h['alarm_id']}")
+            reviewer = st.text_input("Analist", value="analist")
+            note = st.text_area("Not (gerekçe)")
+            if st.form_submit_button("Kararları kaydet", type="primary"):
+                eksik = [i for i, v in kararlar.items() if v is None]
+                if eksik:
+                    st.error(f"Her alarm için karar ver: {', '.join(eksik)}")
+                else:
+                    _resume({"action": "kaydet", "kararlar": kararlar, "reviewer": reviewer,
+                             "note": note})
+    elif payload:
+        if payload.get("acik_konular"):
+            st.markdown("### Açık konular")
+            for k in payload["acik_konular"]:
+                st.warning(k)
         st.markdown("### Belge kararı" if doc_stage else "### Karar")
         with st.form("decision"):
             action = st.radio("Karar", payload["allowed_actions"], format_func=ACTION_LABELS.get)
@@ -116,8 +201,7 @@ with right:
                 if action != "approve" and not note.strip():
                     st.error("Bu karar için not yazmalısın.")
                 else:
-                    resume_case(graph, case_id, {"action": action, "reviewer": reviewer, "note": note})
-                    st.rerun()
+                    _resume({"action": action, "reviewer": reviewer, "note": note})
     else:
         review = values.get("review")
         if review:

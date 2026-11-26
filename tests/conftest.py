@@ -81,3 +81,61 @@ def fake_graph(monkeypatch):
 
     monkeypatch.setattr(nodes, "get_store", lambda: DEMO_STORE)
     return DEMO_STORE
+
+
+# ----------------------------------------------------------------- küçük tarama indeksi
+OS_BASLIK = ["id", "schema", "name", "aliases", "birth_date", "countries", "addresses",
+             "identifiers", "sanctions", "phones", "emails", "program_ids", "dataset",
+             "first_seen", "last_seen", "last_change"]
+
+# OpenSanctions targets.simple.csv biçiminde birkaç kayıt. DEMO_STORE'daki adlarla
+# (Ayşe Yılmaz, DEMO LTD, Offshore Ltd) eşleşen kayıt yok: varsayılan vaka temiz.
+OS_KAYITLARI = [
+    {"id": "Q7747", "schema": "Person", "name": "Vladimir Putin",
+     "aliases": "Владимир Путин;PUTIN Vladimir Vladimirovich", "birth_date": "1952-10-07",
+     "countries": "ru", "sanctions": "EU - Ukraine territorial integrity",
+     "dataset": "EU Financial Sanctions Files (FSF)"},
+    {"id": "NK-ros", "schema": "Company", "name": "Rosneft Oil Company", "aliases": "Rosneft",
+     "countries": "ru", "sanctions": "OFAC SSI", "dataset": "US OFAC Consolidated List"},
+    {"id": "Q-pep", "schema": "Person", "name": "John Smith", "birth_date": "1951-03-02",
+     "countries": "gb", "dataset": "UK House of Commons;Wikidata Politically Exposed Persons"},
+    {"id": "fcdo-1", "schema": "Person", "name": "Ivan Petrov", "birth_date": "1970",
+     "countries": "ru", "dataset": "UK FCDO Sanctions List"},
+    {"id": "crime-1", "schema": "Person", "name": "Carlos Mendez Ruiz", "countries": "co",
+     "dataset": "Interpol Red Notices"},
+    {"id": "only-cyr", "schema": "Person", "name": "Иван Иванов"},
+    {"id": "ship-1", "schema": "Vessel", "name": "Vladimir Putin", "dataset": "EU Sanctions"},
+]
+
+
+def os_csv(path, kayitlar):
+    import csv
+
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=OS_BASLIK)
+        w.writeheader()
+        for k in kayitlar:
+            w.writerow({b: k.get(b, "") for b in OS_BASLIK})
+    return path
+
+
+def kur_tarama_indeksi(klasor, kayitlar=OS_KAYITLARI):
+    from kyb.data.tarama_indeks import TaramaIndeksi, kur
+
+    kaynak = os_csv(Path(klasor) / "os.csv", kayitlar)
+    kur([kaynak], Path(klasor) / "ix.sqlite", ilerleme=False)
+    return TaramaIndeksi(Path(klasor) / "ix.sqlite")
+
+
+@pytest.fixture(scope="session")
+def tarama_ix(tmp_path_factory):
+    return kur_tarama_indeksi(tmp_path_factory.mktemp("tarama"))
+
+
+@pytest.fixture(autouse=True)
+def sahte_tarama(monkeypatch, tarama_ix):
+    """Ajan gerçek data/processed indeksine değil, bu küçük indekse bakar."""
+    from kyb.agents import nodes
+
+    monkeypatch.setattr(nodes, "get_tarama_indeksi", lambda: tarama_ix)
+    return tarama_ix

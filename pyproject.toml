@@ -17,6 +17,7 @@ dependencies = [
   "streamlit>=1.40",
   "ollama>=0.6.3",
   "pypdf>=5.0",
+  "rapidfuzz>=3.6",
 ]
 
 [project.optional-dependencies]

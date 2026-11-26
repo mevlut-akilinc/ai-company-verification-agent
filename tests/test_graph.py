@@ -60,7 +60,7 @@ def test_runs_until_human_then_approves():
     temiz_vaka(g, "t1")
     payload = pending_review(g, "t1")
     assert payload is not None and payload["stage"] == "report"
-    assert payload["risk"]["model"] == "rules-v0"
+    assert payload["risk"]["model"] == "rules-v1"
     assert "KYB Ön Raporu" in payload["report_markdown"]
     assert "DEMO LOJİSTİK" in payload["report_markdown"]
 

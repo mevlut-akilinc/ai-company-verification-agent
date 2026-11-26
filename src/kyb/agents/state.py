@@ -9,6 +9,10 @@ from typing import Annotated, Any, Literal, TypedDict
 ReviewAction = Literal["approve", "reject", "request_changes"]
 
 
+def _sozluk_birlestir(a: dict | None, b: dict | None) -> dict:
+    return {**(a or {}), **(b or {})}
+
+
 class KYBState(TypedDict, total=False):
     case_id: str
     subject: dict[str, Any]          # {"company_number": ..., "name": ...}
@@ -27,6 +31,8 @@ class KYBState(TypedDict, total=False):
     risk: dict[str, Any] | None         # Risk scorer (deterministic code)
     report: dict[str, Any] | None       # Report agent
     review: dict[str, Any] | None       # Human decision
+    # Ara inceleme kapılarının kararları: {"document": {...}, "entity": {...}, "screening": {...}}
+    incelemeler: Annotated[dict[str, dict[str, Any]], _sozluk_birlestir]
 
     revision_count: int
     review_history: Annotated[list[dict[str, Any]], operator.add]

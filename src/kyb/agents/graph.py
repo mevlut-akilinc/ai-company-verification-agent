@@ -3,8 +3,10 @@
 The supervisor is plain code, not an LLM: it walks PIPELINE and sends the case
 to the first step whose output is still missing. Routing is therefore
 reproducible and auditable. Every worker returns to the supervisor, except the
-document agent: a conditional edge sends unclean extractions (grounding
-failures, share-ratio warnings, extraction errors) to document_review first.
+gated ones (kyb.agents.inceleme): document, entity resolution and screening. A
+conditional edge sends their result to an analyst review node first when the
+analyst's decision changes what is computed next (unclean extraction, ambiguous
+or missing registry match, screening alert).
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from kyb.agents import nodes
+from kyb.agents import inceleme, nodes
 from kyb.agents.state import MAX_REVISIONS, PIPELINE, KYBState
 
 NODE_FUNCS = {
@@ -44,23 +46,21 @@ def route(state: KYBState) -> str:
     return END
 
 
-def route_after_document(state: KYBState) -> str:
-    """İlk koşullu kenar: grounding temiz ve uyarı yoksa akış sürer, değilse analist bakar."""
-    return "document_review" if state.get("insan_incelemesi_gerekli", True) else "supervisor"
-
-
 def build_graph(checkpointer=None):
     g = StateGraph(KYBState)
     g.add_node("supervisor", supervisor)
+    kapili = {a.ajan for a in inceleme.ASAMALAR}
     for name, fn in NODE_FUNCS.items():
         g.add_node(name, fn)
-        if name != "document_agent":
+        if name not in kapili:
             g.add_edge(name, "supervisor")
-    # Belge düğümü supervisor'a doğrudan dönmez; önce temiz mi diye bakılır.
-    g.add_node("document_review", nodes.document_review)
-    g.add_conditional_edges("document_agent", route_after_document,
-                            ["supervisor", "document_review"])
-    g.add_edge("document_review", "supervisor")  # reject -> review dolu -> route() END der
+    # Kapılı ajanlar supervisor'a doğrudan dönmez: sonuç analist kararı gerektiriyorsa
+    # önce ilgili inceleme düğümüne gider. reject -> review dolu -> route() END der.
+    for asama in inceleme.ASAMALAR:
+        g.add_node(asama.dugum, inceleme.inceleme_kapisi(asama))
+        g.add_conditional_edges(asama.ajan, inceleme.yonlendir(asama),
+                                ["supervisor", asama.dugum])
+        g.add_edge(asama.dugum, "supervisor")
     g.add_edge(START, "supervisor")
     g.add_conditional_edges("supervisor", route, [*NODE_FUNCS, END])
     return g.compile(checkpointer=checkpointer or InMemorySaver())
@@ -87,6 +87,13 @@ def pending_review(graph, case_id: str) -> Any | None:
 
 
 def resume_case(graph, case_id: str, decision: dict) -> dict:
+    """Kararı önce doğrular, sonra grafı sürdürür. Geçersiz karar ValueError verir ve
+    grafa hiç gitmez: düğüm içinde atılan hata resume değerini checkpoint'te bırakır,
+    sonraki geçerli kararda interrupt() yine eski değeri döndürür ve vaka kilitlenir."""
+    payload = pending_review(graph, case_id)
+    if payload is None:
+        raise ValueError(f"{case_id} karar beklemiyor.")
+    inceleme.dogrula(payload["stage"], case_state(graph, case_id), decision)
     return graph.invoke(Command(resume=decision), case_config(case_id))
 
 
